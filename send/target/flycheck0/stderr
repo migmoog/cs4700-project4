@@ -1,0 +1,7 @@
+error: failed to parse manifest at `C:\Users\orang\ClassNotes\project4\send\Cargo.toml`
+
+Caused by:
+  failed to parse the version requirement `..` for dependency `jap`
+
+Caused by:
+  unexpected character '.' while parsing major version number
