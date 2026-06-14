@@ -107,35 +107,38 @@ async fn main() -> Result<()> {
     eprintln!("S: started with an RTT of {:?}", rtt);
 
     let mut stdin = io::stdin();
-    let mut stdin_buffer = [0u8; 2048];
+    let mut stdin_buffer = Vec::new();
 
-    loop {
-        let bytes_read = stdin.read(&mut stdin_buffer).await?;
-        // means we encountered an EOF
-        let reached_eof = bytes_read == 0;
-        let transmitted_packets = if reached_eof {
-            let fin = Packet {
-                seq: 0,
-                value: PacketValue::Fin,
-            };
-            vec![fin]
-        } else {
-            Packet::data(stdin_buffer[..bytes_read].to_vec())?
-        };
+    // all packets will start at 0 and will wrap
+    let mut seq = 0;
+    let bytes_read = stdin.read_to_end(&mut stdin_buffer).await?;
+    // means we encountered an EOF
+    let transmitted_packets = Packet::data(&mut seq, stdin_buffer[..bytes_read].to_vec())?;
 
-        let mut orch = Orchestrator::new(transmitted_packets, rtt);
-        while !orch.success() {
-            let timed_out  = orch.transmit(&mut sender).await?;
+    let mut orch = Orchestrator::new(transmitted_packets, rtt);
+    while !orch.success() {
+        let timed_out = orch.transmit(&mut sender).await?;
 
-            if timed_out {
-                eprintln!("S: sender timed out on waiting for acks for packet ids");
-            }
-        }
-
-        if reached_eof {
-            break;
+        if timed_out {
+            eprintln!("S: sender timed out on waiting for acks for packet ids");
         }
     }
+
+    let fin = Packet {
+        seq,
+        value: PacketValue::Fin,
+    };
+    fin.write_to(&mut sender).await?;
+
+    let mut fin_ack_buf = [0u8; 1024];
+    let bytes_read = sender.recv(&mut fin_ack_buf).await?;
+    assert!(matches!(
+        from_bytes(&fin_ack_buf[..bytes_read]),
+        Ok(Packet {
+            seq: _,
+            value: PacketValue::Ack { cum, sel: _ }
+        }) if cum == fin.seq
+    ), "Should have the fin acknowledged");
 
     eprintln!("S: concluded");
     Ok(())

@@ -1,4 +1,8 @@
-use std::{fmt::Debug, net::SocketAddr, ops::{Deref, Range}};
+use std::{
+    fmt::Debug,
+    net::SocketAddr,
+    ops::{Deref, Range},
+};
 
 use anyhow::{Result, anyhow};
 use postcard::{experimental::serialized_size, take_from_bytes, to_slice};
@@ -66,42 +70,72 @@ pub enum PacketValue {
 impl Packet {
     /// Initializes a set of fragmented data packets
     /// with a random initial sequence number.
-    pub fn data(data: Vec<u8>) -> Result<Vec<Self>> {
-        Self {
-            seq: 0,
+    pub fn data(seq: &mut SequenceNumber, data: Vec<u8>) -> Result<Vec<Self>> {
+        let (out, new_seq_start) = Self {
+            seq: *seq,
             value: PacketValue::Data(FileData(data)),
         }
-        .fragment()
+        .fragment()?;
+
+        *seq = new_seq_start;
+
+        Ok(out)
+    }
+
+    pub fn ack_num(seq: SequenceNumber, cum: SequenceNumber) -> Self {
+        Self {
+            seq,
+            value: PacketValue::Ack {
+                cum,
+                sel: Vec::new(),
+            },
+        }
+    }
+
+    pub fn ack_cum_sel(
+        seq: SequenceNumber,
+        cum: SequenceNumber,
+        sel: Vec<Range<SequenceNumber>>,
+    ) -> Self {
+        Self {
+            seq,
+            value: PacketValue::Ack { cum, sel },
+        }
     }
 
     /// The size of the MTU that can be dedicated to data
     pub const MAX_SEGMENT_SIZE: usize = MTU - size_of::<Self>();
 
     /// Checks the size of the serialized packets in bytes and
-    /// fragments it accordingly.
-    pub fn fragment(self) -> Result<Vec<Self>> {
+    /// fragments it accordingly. Returns the list of fragments
+    /// alongside the last SequenceNumber
+    fn fragment(self) -> Result<(Vec<Self>, SequenceNumber)> {
         let size = serialized_size(&self)?;
         if size <= MTU {
-            return Ok(vec![self]);
+            let seq = self.seq;
+            return Ok((vec![self], seq));
         }
 
         let PacketValue::Data(original) = self.value else {
             return Err(anyhow!("non-data packet exceeds MTU {:?}", self.value));
         };
 
-        let mut seq: u32 = 0;
-        Ok(original
+        let mut seq = self.seq;
+        let mut next_seq = seq.wrapping_add(1);
+        let fragments = original
             .as_slice()
             .chunks(Self::MAX_SEGMENT_SIZE)
             .map(|segment| {
                 let p = Self {
-                    seq,
+                    seq: next_seq,
                     value: PacketValue::Data(FileData(segment.into())),
                 };
-                seq += 1;
+                seq = next_seq;
+                next_seq = next_seq.wrapping_add(1);
                 p
             })
-            .collect())
+            .collect();
+        Ok((fragments, seq))
     }
 
     pub async fn write_to(&self, writer: &mut UdpSocket) -> Result<usize> {

@@ -1,6 +1,7 @@
-use jap::{FileData, MTU, Packet, PacketValue};
+use anyhow::Result;
+use jap::{FileData, MTU, Packet, PacketValue, SequenceNumber};
 use postcard::from_bytes;
-use std::{collections::BTreeMap, ops::Range};
+use std::{collections::BTreeMap, net::SocketAddr, ops::Range};
 use tokio::net::UdpSocket;
 
 const RWND: usize = MTU * 3;
@@ -26,6 +27,25 @@ fn build_sack(file_data: &BTreeMap<u32, FileData>) -> (u32, Vec<Range<u32>>) {
     (cum, sel)
 }
 
+async fn send_ack(
+    socket: &mut UdpSocket,
+    addr: &SocketAddr,
+    seq: &mut SequenceNumber,
+    acked_seq: SequenceNumber,
+) -> Result<usize> {
+    let ack = Packet {
+        seq: *seq,
+        value: PacketValue::Ack {
+            cum: acked_seq,
+            sel: vec![],
+        },
+    };
+
+    *seq = seq.wrapping_add(1);
+
+    ack.write_to_addr(socket, addr).await
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mut receiver = UdpSocket::bind(format!("127.0.0.1:0")).await?;
@@ -36,11 +56,13 @@ async fn main() -> anyhow::Result<()> {
     // wait for the initial start message from the sender
     let (len, addr) = receiver.recv_from(&mut buf).await?;
     let p: Packet = from_bytes(&buf[..len])?;
-    assert!(matches!(p.value, PacketValue::Start), "First message should be a start message");
-    let _startack_bytes_written = Packet {
-        seq: 0,
-        value: PacketValue::Ack { cum: p.seq, sel: vec![] }
-    }.write_to_addr(&mut receiver, &addr).await?;
+    assert!(
+        matches!(p.value, PacketValue::Start),
+        "First message should be a start message"
+    );
+
+    let mut seq = 0;
+    let _startack_bytes_written = send_ack(&mut receiver, &addr, &mut seq, p.seq).await?;
 
     let mut file_data = BTreeMap::new();
     'r: loop {
@@ -62,15 +84,17 @@ async fn main() -> anyhow::Result<()> {
         }
 
         let (cum, sel) = build_sack(&file_data);
-        let sack = Packet {
-            seq: 0,
-            value: PacketValue::Ack { cum, sel },
-        };
-        eprintln!("Sending ack: {:?}", sack.value);
-        sack.write_to_addr(&mut receiver, &addr).await?;
+        // send_ack(&mut receiver, &addr, &mut seq, packet.seq).await?;
+        Packet::ack_cum_sel(seq, cum, sel).write_to_addr(&mut receiver, &addr).await?;
+        // let sack = Packet {
+        //     seq: 0,
+        //     value: PacketValue::Ack { cum, sel },
+        // };
+        // eprintln!("Sending ack: {:?}", sack.value);
+        // sack.write_to_addr(&mut receiver, &addr).await?;
     }
 
     let total_data: Vec<u8> = file_data.into_values().map(|f| f.0).flatten().collect();
-    println!("{}", String::from_utf8_lossy(&total_data));
+    print!("{}", String::from_utf8_lossy(&total_data));
     loop {}
 }
