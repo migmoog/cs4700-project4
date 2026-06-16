@@ -9,7 +9,7 @@ use super::SeqNum;
 use derive_more::Deref;
 use std::fmt::Debug;
 
-#[derive(Serialize, Deserialize, Deref)]
+#[derive(Serialize, Deserialize, Deref, Clone)]
 pub struct FileData(pub Vec<u8>);
 
 impl Debug for FileData {
@@ -20,7 +20,7 @@ impl Debug for FileData {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Ack {
     /// The cumulative ack.
     /// AKA the highest packet ID of ones received contiguously
@@ -69,7 +69,7 @@ impl Ack {
 
 /// represents data being sent over a socket,
 /// as well as ACKs
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum PacketValue {
     // Sender gives this to the receiver,
     // then uses it get the RTT estimate based on how long it takes to receive an ack.
@@ -77,7 +77,7 @@ pub enum PacketValue {
     Start(SeqNum),
 
     // an actual packet with data
-    Data(FileData),
+    Data { data: FileData, window: SeqNum },
 
     // An Acknowledgement from a receiver that a packet was received
     Ack(Ack),

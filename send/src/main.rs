@@ -22,7 +22,7 @@ async fn main() -> Result<()> {
     // all packets will start at 0 and will wrap
     let mut seq = 0;
     // means we encountered an EOF
-    let packets = Packet::data(&mut seq, stdin_buffer[..bytes_read].to_vec())?;
+    let packets = Packet::data(&mut seq, stdin_buffer[..bytes_read].to_vec(), 1)?;
 
     let rtt = start(&mut sender, packets.len() as SeqNum).await?;
 

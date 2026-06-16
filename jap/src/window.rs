@@ -15,6 +15,31 @@ pub fn adjust_rtt(old_rtt: Duration, new_sample: Duration) -> Duration {
     )
 }
 
+pub async fn check_for_packets(
+    socket: &mut UdpSocket,
+    rwnd: SeqNum,
+) -> (PacketList, Vec<u8>) {
+    let mut buf = Vec::with_capacity(MTU * rwnd as usize);
+    buf.reserve(MTU);
+
+    // read all the bytes possible
+    while let Ok(_) = if socket.peer_addr().is_ok() {
+        socket.try_recv_buf(&mut buf)
+    } else {
+        let res = socket.try_recv_buf_from(&mut buf);
+        match res {
+            Ok((len, addr)) => {
+                socket.connect(addr).await.expect("Failed to connect");
+                Ok(len)
+            },
+            Err(e) => Err(e),
+        }
+    } {}
+
+    let (list, remaining) = Packet::from_bytes(&buf);
+    (list, remaining.to_vec())
+}
+
 /// Blocks reading on the socket until a response is received. Returns deserialized packets and any
 /// remaining bytes that couldn't be deserialized. Will sort the packets
 pub async fn wait_for_packets(
@@ -23,7 +48,7 @@ pub async fn wait_for_packets(
 ) -> Result<(PacketList, Vec<u8>)> {
     let mut buf = Vec::with_capacity(MTU * rwnd as usize);
     buf.reserve(MTU);
-    let bytes_read = if socket.peer_addr().is_ok() {
+    let _bytes_read = if socket.peer_addr().is_ok() {
         socket.recv_buf(&mut buf).await?
     } else {
         let (len, addr) = socket.recv_buf_from(&mut buf).await?;
@@ -42,10 +67,7 @@ pub async fn wait_for_packets(
         }
     }
 
-    let (mut received_packets, remaining) = Packet::from_bytes(&buf);
-
-    // order the received packets by sequence number
-    received_packets.sort_by_key(|p| p.seq);
+    let (received_packets, remaining) = Packet::from_bytes(&buf);
     Ok((received_packets, remaining.to_vec()))
 }
 

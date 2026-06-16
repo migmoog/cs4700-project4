@@ -94,17 +94,33 @@ impl Orchestrator {
 
     /// Will transmit packets
     pub(crate) async fn transmit(&mut self) -> Result<()> {
+        let transmitted = 
+            self.packets
+                .clone()
+                .into_iter()
+                .filter_map(|p| {
+                    if !self.received_acks.contains(&p.seq) {
+                        eprintln!("S: Sending unacked {}", p.seq);
+                        if let PacketValue::Data { data, .. } = p.value {
+                            Some(Packet {
+                                seq: p.seq,
+                                value: PacketValue::Data {
+                                    data: data,
+                                    window: self.window,
+                                },
+                            })
+                        } else {
+                            Some(p)
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .take(self.window as usize).collect::<Vec<_>>();
         let (received_packets, time_taken) = try_share_packets(
             self.timeout,
             // send only the unacked packets
-            self.packets.iter().filter(|p| {
-                if !self.received_acks.contains(&p.seq) {
-                    eprintln!("S: Sending unacked {}", p.seq);
-                    true
-                } else {
-                    false
-                }
-            }).take(self.window as usize),
+            transmitted.iter(),
             &mut self.socket,
             self.window,
         )
