@@ -22,6 +22,7 @@ pub async fn wait_for_packets(
     rwnd: SeqNum,
 ) -> Result<(PacketList, Vec<u8>)> {
     let mut buf = Vec::with_capacity(MTU * rwnd as usize);
+    buf.reserve(MTU);
     let bytes_read = if socket.peer_addr().is_ok() {
         socket.recv_buf(&mut buf).await?
     } else {
@@ -30,7 +31,18 @@ pub async fn wait_for_packets(
         len
     };
 
-    let (mut received_packets, remaining) = Packet::from_bytes(&buf[..bytes_read]);
+    // Drain every datagram already sitting in the receive buffer, so we always
+    // act on the most recent ACK instead of a stale backlog.
+    loop {
+        buf.reserve(MTU);
+        match socket.try_recv_buf(&mut buf) {
+            Ok(_) => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    let (mut received_packets, remaining) = Packet::from_bytes(&buf);
 
     // order the received packets by sequence number
     received_packets.sort_by_key(|p| p.seq);
@@ -87,8 +99,17 @@ where
     let rto = rtt * 2;
     let start = Instant::now();
     let quit_time = start + rto;
-    match timeout_at(quit_time, share_packets(socket, packets, rwnd)).await {
-        Ok(Ok(received_bytes)) => Ok((received_bytes, Instant::now() - start)),
+    send_packets(socket, packets).await?;
+    match timeout_at(quit_time, wait_for_packets(socket, rwnd)).await {
+        Ok(Ok((received_bytes, remaining))) => {
+            if !remaining.is_empty() {
+                eprintln!(
+                    "Unserializable bytes: {}",
+                    String::from_utf8_lossy(&remaining)
+                );
+            }
+            Ok((received_bytes, Instant::now() - start))
+        }
         Err(_) => Ok((vec![], Instant::now() - start)),
         Ok(Err(socket_error)) => Err(socket_error),
     }
@@ -96,11 +117,11 @@ where
 
 /// Sends a "start" message packet. Will test RTT's with exponential backoff.
 /// Returns an rtt sample or a socket error
-pub async fn start(socket: &mut UdpSocket) -> Result<Duration> {
-    let mut rtt = Duration::from_secs(1);
+pub async fn start(socket: &mut UdpSocket, fragments: SeqNum) -> Result<Duration> {
+    let mut rtt = Duration::from_secs_f32(0.75);
     let start_slice = &[Packet {
         seq: 0,
-        value: PacketValue::Start,
+        value: PacketValue::Start(fragments),
     }];
     loop {
         match try_share_packets(rtt, start_slice.iter(), socket, 1).await {

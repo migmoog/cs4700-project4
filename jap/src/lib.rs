@@ -50,11 +50,10 @@ impl Packet {
     }
 
     pub fn fin(seq: &mut SeqNum) -> Self {
-        let fin_seq = *seq;
         *seq += 1;
 
         Self {
-            seq: fin_seq,
+            seq: *seq,
             value: PacketValue::Fin,
         }
     }

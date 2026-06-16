@@ -20,40 +20,6 @@ impl Debug for FileData {
     }
 }
 
-// #[derive(Default, Debug, Deref, DerefMut, Serialize, Deserialize)]
-// pub struct Sack(BTreeSet<SeqNum>);
-
-// impl Serialize for Sack {
-//     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-//     where
-//         S: serde::Serializer,
-//     {
-//         let rangevec: Vec<(Bound<SeqNum>, Bound<SeqNum>)> =
-//             self.0.iter().map(|ar| (ar.start, ar.end)).collect();
-//         rangevec.serialize(serializer)
-//     }
-// }
-//
-// impl<'de> Deserialize<'de> for Sack {
-//     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-//     where
-//         D: serde::Deserializer<'de>,
-//     {
-//         let rangevec = Vec::<(Bound<SeqNum>, Bound<SeqNum>)>::deserialize(deserializer)?;
-//         let mut set = RangeSet::new();
-//         for (start, end) in rangevec {
-//             set.insert(AnyRange::new(start, end));
-//         }
-//         Ok(Self(set))
-//     }
-// }
-
-// impl Sack {
-//     fn add_seq(&mut self, seq: SeqNum) -> bool {
-//         self.0.insert(seq)
-//     }
-// }
-
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Ack {
     /// The cumulative ack.
@@ -69,7 +35,7 @@ pub struct Ack {
 }
 
 impl Ack {
-    fn add_seq(&mut self, new_seq: SeqNum) -> bool {
+    pub fn add_seq(&mut self, new_seq: SeqNum) -> bool {
         if new_seq <= self.cum {
             return false;
         }
@@ -84,14 +50,17 @@ impl Ack {
     }
 
     pub fn from_packets<'a>(packets: &'a [Packet], adv_win: SeqNum) -> Self {
+        let min = packets.iter().map(|p| p.seq).min().unwrap();
         let mut out = Self {
-            cum: 0,
+            cum: min,
             sel: Default::default(),
             adv_win,
         };
 
         for p in packets {
-            out.add_seq(p.seq);
+            if out.add_seq(p.seq) {
+                eprintln!("Added {} to ack", p.seq);
+            }
         }
 
         out
@@ -103,8 +72,9 @@ impl Ack {
 #[derive(Serialize, Deserialize, Debug)]
 pub enum PacketValue {
     // Sender gives this to the receiver,
-    // then uses it get the RTT estimate based on how long it takes to receive an ack
-    Start,
+    // then uses it get the RTT estimate based on how long it takes to receive an ack.
+    // It also tells the receiver how many packets to expect
+    Start(SeqNum),
 
     // an actual packet with data
     Data(FileData),

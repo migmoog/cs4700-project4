@@ -2,7 +2,7 @@ use anyhow;
 
 use anyhow::Result;
 
-use tokio::net::UdpSocket;
+use tokio::{net::UdpSocket, time::sleep};
 
 use std::{collections::BTreeSet, ops::Bound, panic, time::Duration};
 
@@ -104,14 +104,13 @@ impl Orchestrator {
                 } else {
                     false
                 }
-            }),
+            }).take(self.window as usize),
             &mut self.socket,
             self.window,
         )
         .await?;
         self.timeout = adjust_rtt(self.timeout, time_taken);
 
-        self.window = received_packets.len() as SeqNum;
         for packet in received_packets {
             if let Packet {
                 seq: _,
@@ -119,7 +118,7 @@ impl Orchestrator {
             } = packet
                 && self.is_ack_valid(&a)
             {
-                // self.window = a.adv_win;
+                self.window = a.adv_win;
                 self.adjust_acks(&a);
             }
         }
