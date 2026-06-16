@@ -10,3 +10,5 @@ tokio = { workspace = true }
 anyhow = { workspace = true }
 heapless  = { workspace = true }
 rand = "0.10.1"
+btree-range-map.workspace = true
+derive_more = { version = "2.1.1", features = ["deref", "deref_mut"] }

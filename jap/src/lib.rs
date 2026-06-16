@@ -1,15 +1,16 @@
-use std::{
-    fmt::Debug,
-    net::SocketAddr,
-    ops::{Deref, Range},
-};
+use std::{fmt::Debug, net::SocketAddr};
 
 use anyhow::{Result, anyhow};
 use postcard::{experimental::serialized_size, take_from_bytes, to_slice};
 use serde::{Deserialize, Serialize};
 use tokio::net::UdpSocket;
 
-pub type SequenceNumber = u32;
+mod window;
+pub use window::{adjust_rtt, send_packets, start, try_share_packets, wait_for_packets};
+mod value;
+pub use value::{Ack, FileData, PacketValue};
+
+pub type SeqNum = u32;
 
 // data cannot be over the size of blabla
 pub const MTU: usize = 1500;
@@ -17,63 +18,29 @@ pub const MTU: usize = 1500;
 /// container with a sequence number for the data
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Packet {
-    pub seq: SequenceNumber,
-    pub value: PacketValue,
+    pub seq: SeqNum,
+    pub value: value::PacketValue,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct FileData(pub Vec<u8>);
+pub struct UnserializeableError(Vec<u8>);
 
-impl Debug for FileData {
+impl Debug for UnserializeableError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("FileData")
-            .field(&String::from_utf8_lossy(&self.0))
+        f.debug_tuple("UnserializeableError")
+            .field(&String::from_utf8_lossy(self.0.as_slice()))
             .finish()
     }
 }
 
-impl Deref for FileData {
-    type Target = Vec<u8>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-/// represents data being sent over a socket,
-/// as well as ACKs
-#[derive(Serialize, Deserialize, Debug)]
-pub enum PacketValue {
-    // an actual packet with data
-    Data(FileData),
-
-    // An Acknowledgement from a receiver that a packet was received
-    Ack {
-        /// The cumulative ack.
-        /// AKA the highest packet ID of ones received contiguously
-        cum: SequenceNumber,
-
-        /// The SACK, vector of ranges that represent
-        /// the package IDs received by the receiver
-        sel: Vec<Range<SequenceNumber>>,
-    },
-
-    // Sender gives this to the receiver,
-    // then uses it get the RTT estimate based on how long it takes to receive an ack
-    Start,
-
-    // A message from the sender that all packets have been
-    // succesfully sent and acked
-    Fin,
-}
+pub(crate) type PacketList = Vec<Packet>;
 
 impl Packet {
     /// Initializes a set of fragmented data packets
     /// with a random initial sequence number.
-    pub fn data(seq: &mut SequenceNumber, data: Vec<u8>) -> Result<Vec<Self>> {
+    pub fn data(seq: &mut SeqNum, data: Vec<u8>) -> Result<PacketList> {
         let (out, new_seq_start) = Self {
             seq: *seq,
-            value: PacketValue::Data(FileData(data)),
+            value: value::PacketValue::Data(value::FileData(data)),
         }
         .fragment()?;
 
@@ -82,24 +49,13 @@ impl Packet {
         Ok(out)
     }
 
-    pub fn ack_num(seq: SequenceNumber, cum: SequenceNumber) -> Self {
-        Self {
-            seq,
-            value: PacketValue::Ack {
-                cum,
-                sel: Vec::new(),
-            },
-        }
-    }
+    pub fn fin(seq: &mut SeqNum) -> Self {
+        let fin_seq = *seq;
+        *seq += 1;
 
-    pub fn ack_cum_sel(
-        seq: SequenceNumber,
-        cum: SequenceNumber,
-        sel: Vec<Range<SequenceNumber>>,
-    ) -> Self {
         Self {
-            seq,
-            value: PacketValue::Ack { cum, sel },
+            seq: fin_seq,
+            value: PacketValue::Fin,
         }
     }
 
@@ -109,14 +65,14 @@ impl Packet {
     /// Checks the size of the serialized packets in bytes and
     /// fragments it accordingly. Returns the list of fragments
     /// alongside the last SequenceNumber
-    fn fragment(self) -> Result<(Vec<Self>, SequenceNumber)> {
+    fn fragment(self) -> Result<(Vec<Self>, SeqNum)> {
         let size = serialized_size(&self)?;
         if size <= MTU {
             let seq = self.seq;
             return Ok((vec![self], seq));
         }
 
-        let PacketValue::Data(original) = self.value else {
+        let value::PacketValue::Data(original) = self.value else {
             return Err(anyhow!("non-data packet exceeds MTU {:?}", self.value));
         };
 
@@ -128,7 +84,7 @@ impl Packet {
             .map(|segment| {
                 let p = Self {
                     seq: next_seq,
-                    value: PacketValue::Data(FileData(segment.into())),
+                    value: value::PacketValue::Data(value::FileData(segment.into())),
                 };
                 seq = next_seq;
                 next_seq = next_seq.wrapping_add(1);
@@ -138,6 +94,7 @@ impl Packet {
         Ok((fragments, seq))
     }
 
+    /// Sends data on a one to one socket
     pub async fn write_to(&self, writer: &mut UdpSocket) -> Result<usize> {
         let mut buf = [0u8; MTU];
         let serialized = to_slice(self, &mut buf)?;
@@ -145,6 +102,7 @@ impl Packet {
         Ok(bytes_read)
     }
 
+    /// Sends data on a one-to-many socket
     pub async fn write_to_addr(&self, writer: &mut UdpSocket, addr: &SocketAddr) -> Result<usize> {
         let mut buf = [0u8; MTU];
         let serialized = to_slice(self, &mut buf)?;
@@ -152,6 +110,7 @@ impl Packet {
         Ok(bytes_read)
     }
 
+    /// Converts a window of net bytes to a list of packets
     pub fn from_bytes(mut buffer: &[u8]) -> (Vec<Self>, &[u8]) {
         let mut out = Vec::new();
         while let Ok((packet, remaining)) = take_from_bytes(buffer) {
