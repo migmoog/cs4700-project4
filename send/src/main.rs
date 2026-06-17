@@ -28,18 +28,34 @@ async fn main() -> Result<()> {
 
     let mut orch = Orchestrator::new(sender, rtt).await;
 
-
     orch.change_packets(packets);
 
     // transmitting file data
-    while !orch.success() {
-        orch.transmit().await?;
+    loop {
+        orch.check().await;
+        if orch.success() {
+            break;
+        } else if orch.timed_out() {
+            orch.transmit().await?;
+        }
     }
+    // while !orch.success() {
+    //     orch.check();
+    //
+    //     if orch.timed_out() {
+    //         orch.transmit().await?;
+    //     }
+    // }
 
     orch.change_packets(vec![Packet::fin(&mut seq)]);
     // transmitting finished packet
-    while !orch.success() {
-        orch.transmit().await?;
+    loop {
+        orch.check().await;
+        if orch.success() {
+            break;
+        } else if orch.timed_out() {
+            orch.transmit().await?;
+        }
     }
 
     eprintln!("S: concluded");
