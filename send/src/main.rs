@@ -95,8 +95,9 @@ async fn main() -> Result<()> {
         let time_since_send = Instant::now() - last_send;
         if time_since_send > rtt * 2 || window.keys().all(|k| received_acks.contains(k)) {
             window = make_window(&mut packets, window_size, &received_acks);
-            if window.is_empty() && got_all_acks(&packets, &received_acks) {
-                break;
+            if window.is_empty() {
+                eprintln!("I have nothing to send. Contuining");
+                continue;
             }
 
             send(&window, &mut sender).await?;

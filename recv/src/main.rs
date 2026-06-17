@@ -1,7 +1,7 @@
 use anyhow::Result;
 use jap::{Packet, PacketValue, SeqNum, check_for_packets};
 use std::collections::BTreeMap;
-use tokio::net::UdpSocket;
+use tokio::{io::AsyncWriteExt, net::UdpSocket};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -15,10 +15,13 @@ async fn main() -> Result<()> {
     let mut file_data = BTreeMap::new();
     let mut ack_cum = 0;
 
-    let mut process = |s: SeqNum, v: &PacketValue| match v {
+    let mut out = tokio::io::stdout();
+    let mut process = async |s: SeqNum, v: &PacketValue| match v {
         PacketValue::Data(d) => {
             file_data.insert(s, d.to_string());
-            print!("{}", d.to_string());
+            out.write_all(d.to_string().as_bytes()).await.ok();
+            out.flush().await.ok();
+            // print!("{}", d.to_string());
         }
         _ => {}
     };
@@ -40,13 +43,13 @@ async fn main() -> Result<()> {
         eprintln!("Got {} packets from sender", received_packets.len());
         for packet in received_packets {
             if packet.seq == ack_cum + 1 {
-                process(packet.seq, &packet.value);
+                process(packet.seq, &packet.value).await;
                 eprintln!("In-order packet (prev ack: {}): {:?}", ack_cum, packet);
                 ack_cum += 1;
 
                 while from_sender.contains_key(&(ack_cum + 1)) {
                     if let Some(value) = from_sender.remove(&(ack_cum + 1)) {
-                        process(ack_cum + 1, &value);
+                        process(ack_cum + 1, &value).await;
                         ack_cum += 1;
                     }
                 }
