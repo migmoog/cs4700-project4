@@ -1,10 +1,48 @@
+use std::assert_matches;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use jap::{Packet, PacketValue, SeqNum, check_for_packets, send_packets};
+use jap::{Packet, PacketValue, SeqNum, check_for_packets, send_packets, wait_for_packet};
 use tokio::io::{self, AsyncReadExt};
 use tokio::net::UdpSocket;
+
+async fn estimate_rtt(socket: &mut UdpSocket, seq: &mut SeqNum) -> Result<Duration> {
+    let start = Packet {
+        seq: *seq,
+        value: PacketValue::Start,
+    };
+
+    let mut first_send = Instant::now();
+
+    let mut attempt_timeout = Duration::from_secs_f32(1.5);
+    eprintln!("Sending start to receiver");
+    start.write_to(socket).await?;
+
+    // need to retry in the event of this packet being dropped
+    loop {
+        match tokio::time::timeout(attempt_timeout, wait_for_packet(socket)).await {
+            Ok(Ok(p)) => {
+                assert_matches!(
+                    p,
+                    Packet {
+                        seq: _,
+                        value: PacketValue::Ack { cum: _ }
+                    }
+                );
+                *seq += 1;
+                return Ok(Instant::now() - first_send);
+            }
+            Ok(Err(e)) => return Err(e),
+            Err(_elapsed) => {
+                first_send = Instant::now();
+                attempt_timeout *= 2;
+                eprintln!("Retrying start send");
+                start.write_to(socket).await?;
+            }
+        }
+    }
+}
 
 fn make_window(
     packets: &mut BTreeMap<SeqNum, PacketValue>,
@@ -48,7 +86,7 @@ async fn main() -> Result<()> {
     let mut received_acks = BTreeSet::<SeqNum>::new();
     let mut window_size = 4;
 
-    let rtt = Duration::from_secs_f32(1.5);
+    let rtt = estimate_rtt(&mut sender, &mut seq).await?;
     let mut last_send = Instant::now();
     let mut window = make_window(&mut packets, window_size, &received_acks);
     let send = async |w: &BTreeMap<SeqNum, PacketValue>, socket: &mut UdpSocket| {
@@ -104,6 +142,8 @@ async fn main() -> Result<()> {
                     "Sent {} packets. Got {} acks back. New window size is {}",
                     old_window_size, acks_got, window_size
                 );
+            } else {
+                window_size += 1;
             }
 
             acks_got = 0;

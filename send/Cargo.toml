@@ -10,3 +10,4 @@ clap = { version = "4.6.1", features = ["derive"] }
 anyhow.workspace = true
 postcard.workspace = true
 btree-range-map.workspace = true
+assert_matches = "1.5.0"

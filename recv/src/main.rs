@@ -21,7 +21,6 @@ async fn main() -> Result<()> {
             file_data.insert(s, d.to_string());
             out.write_all(d.to_string().as_bytes()).await.ok();
             out.flush().await.ok();
-            // print!("{}", d.to_string());
         }
         _ => {}
     };
@@ -53,6 +52,13 @@ async fn main() -> Result<()> {
                         ack_cum += 1;
                     }
                 }
+            } else if let Packet {
+                seq: _,
+                value: PacketValue::Start,
+            } = packet
+            {
+                // special case, do not ignore
+                eprintln!("Got a start message");
             } else if packet.seq > ack_cum + 1 {
                 // out of order
                 eprintln!("OoO! Cum is {}, but this packet is {}", ack_cum, packet.seq);
