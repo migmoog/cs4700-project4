@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use tokio::net::UdpSocket;
 
 mod window;
-pub use window::{adjust_rtt, send_packets, start, try_share_packets, check_for_packets};
+pub use window::{adjust_rtt, check_for_packets, send_packets, start, try_share_packets};
 mod value;
 pub use value::{Ack, FileData, PacketValue};
 
@@ -30,10 +30,7 @@ impl Packet {
     pub fn data(seq: &mut SeqNum, data: Vec<u8>, window: SeqNum) -> Result<PacketList> {
         let (out, new_seq_start) = Self {
             seq: *seq,
-            value: value::PacketValue::Data {
-                data: value::FileData(data),
-                window: 1
-            },
+            value: value::PacketValue::Data(value::FileData(data)),
         }
         .fragment(window)?;
 
@@ -64,7 +61,7 @@ impl Packet {
             return Ok((vec![self], seq));
         }
 
-        let value::PacketValue::Data { data: original, .. } = self.value else {
+        let value::PacketValue::Data(original) = self.value else {
             return Err(anyhow!("non-data packet exceeds MTU {:?}", self.value));
         };
 
@@ -76,11 +73,7 @@ impl Packet {
             .map(|segment| {
                 let p = Self {
                     seq: next_seq,
-                    value: value::PacketValue::Data {
-                        data: value::FileData(segment.into()),
-                        // NOTE: DO NOT SEND IT LIKE THIS, MUTATE THIS VAR
-                        window,
-                    },
+                    value: value::PacketValue::Data(value::FileData(segment.into())),
                 };
                 seq = next_seq;
                 next_seq = next_seq.wrapping_add(1);

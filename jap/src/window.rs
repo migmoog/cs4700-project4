@@ -152,12 +152,8 @@ pub async fn start(socket: &mut UdpSocket, fragments: SeqNum) -> Result<Duration
                     received_packets.get(0),
                     Some(Packet {
                         seq: _,
-                        value: PacketValue::Ack(Ack {
-                            cum: 0,
-                            sel: _,
-                            adv_win: _
-                        })
-                    })
+                        value: PacketValue::Ack(set)
+                    }) if set.contains(&start_slice[0].seq)
                 ) =>
             {
                 return Ok(dur);

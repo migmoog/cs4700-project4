@@ -20,6 +20,12 @@ impl Debug for FileData {
     }
 }
 
+impl ToString for FileData {
+    fn to_string(&self) -> String {
+        String::from_utf8_lossy(&self.0).to_string()
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Ack {
     /// The cumulative ack.
@@ -77,10 +83,10 @@ pub enum PacketValue {
     Start(SeqNum),
 
     // an actual packet with data
-    Data { data: FileData, window: SeqNum },
+    Data(FileData),
 
     // An Acknowledgement from a receiver that a packet was received
-    Ack(Ack),
+    Ack(BTreeSet<SeqNum>),
 
     // A message from the sender that all packets have been
     // succesfully sent and acked
