@@ -17,8 +17,8 @@ pub struct Orchestrator {
     timeout: Duration,
     socket: UdpSocket,
     window: SeqNum,
-    ids_sent: BTreeSet<SeqNum>,
-    last_received: Instant,
+    send_window: BTreeSet<SeqNum>,
+    last_sent: Instant,
 }
 
 impl Orchestrator {
@@ -31,8 +31,8 @@ impl Orchestrator {
             timeout,
             socket,
             window: Self::INITIAL_WINDOW, // good initial window size
-            ids_sent: BTreeSet::new(),
-            last_received: Instant::now(),
+            send_window: BTreeSet::new(),
+            last_sent: Instant::now(),
         }
     }
 
@@ -45,8 +45,9 @@ impl Orchestrator {
     pub fn change_packets(&mut self, list: Vec<Packet>) {
         self.packets = list;
         self.received_acks.clear();
-        self.ids_sent.clear();
+        self.send_window.clear();
         self.window = Self::INITIAL_WINDOW;
+        self.timeout = Duration::from_secs_f32(2.2);
     }
 
     /// Reads packets received on the socket and adjusts the received acks
@@ -55,7 +56,6 @@ impl Orchestrator {
         if received_packets.is_empty() {
             return;
         }
-        self.last_received = Instant::now();
 
         if !remaining.is_empty() {
             eprintln!("Undeserialized bytes {:?}", remaining);
@@ -68,9 +68,10 @@ impl Orchestrator {
         );
         let mut acks_got = BTreeSet::new();
         for packet in received_packets {
-            if let PacketValue::Ack(set) = packet.value {
-                for seq in set.into_iter().filter(|id| self.ids_sent.contains(id)) {
+            if let PacketValue::Ack { cum } = packet.value {
+                for seq in self.packets.iter().map(|p| p.seq).filter(|seq| *seq <= cum) {
                     if self.received_acks.insert(seq) {
+                        self.send_window.remove(&seq);
                         acks_got.insert(seq);
                     }
                 }
@@ -78,28 +79,27 @@ impl Orchestrator {
         }
 
         // self.window = (acks_got.len() as SeqNum).max(1);
-        eprintln!(
-            "Acks received: {:?}. # of packets dropped: {}",
-            acks_got,
-            self.ids_sent.len() - acks_got.len()
-        );
-        self.ids_sent.clear();
+        if acks_got.len() > 0 {
+            eprintln!(
+                "Acks received: {:?}",
+                acks_got,
+            );
+        }
+        // self.send_window.clear();
     }
 
     /// Checks if the orchestrator either hasn't send IDs or has timed out
     pub fn timed_out(&mut self) -> bool {
-        let time_since = Instant::now() - self.last_received;
-        if self.ids_sent.is_empty() {
+        let time_since = Instant::now() - self.last_sent;
+        if self.send_window.is_empty() {
             true
-        } else if time_since
-            > self.timeout * 2 * self.ids_sent.len() as u32
-        {
+        } else if time_since > self.timeout {
             for recseq in self.received_acks.iter() {
-                if !self.ids_sent.contains(recseq) {
+                if !self.send_window.contains(recseq) {
                     self.window = 1.max(self.window - 1);
                 }
             }
-            self.timeout = adjust_rtt(self.timeout, time_since);
+            self.timeout *= 2;
             true
         } else {
             false
@@ -108,21 +108,22 @@ impl Orchestrator {
 
     /// Will transmit packets
     pub async fn transmit(&mut self) -> Result<()> {
-        self.ids_sent = self
+        self.send_window = self
             .packets
             .iter()
             .filter_map(|p| (!self.received_acks.contains(&p.seq)).then_some(p.seq))
             .take(self.window as usize)
             .collect();
-        if self.ids_sent.is_empty() {
+        if self.send_window.is_empty() {
             return Err(anyhow!("Doesn't have any IDs to send. {:?}", self));
         }
-        eprintln!("Trying to send IDs {:?}", self.ids_sent);
+        self.last_sent = Instant::now();
+        eprintln!("Trying to send IDs {:?}", self.send_window);
         send_packets(
             &mut self.socket,
             self.packets
                 .iter()
-                .filter(|p| self.ids_sent.contains(&p.seq)),
+                .filter(|p| self.send_window.contains(&p.seq)),
         )
         .await?;
 

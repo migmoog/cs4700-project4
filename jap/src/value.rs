@@ -86,7 +86,7 @@ pub enum PacketValue {
     Data(FileData),
 
     // An Acknowledgement from a receiver that a packet was received
-    Ack(BTreeSet<SeqNum>),
+    Ack { cum: SeqNum },
 
     // A message from the sender that all packets have been
     // succesfully sent and acked

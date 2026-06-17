@@ -1,10 +1,9 @@
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use tokio::net::UdpSocket;
 use tokio::time::{Instant, timeout_at};
 
-use crate::Ack;
 use crate::{MTU, Packet, PacketList, SeqNum, value::PacketValue};
 
 /// Adjusts the round trip time estimate with the provided formula
@@ -15,10 +14,7 @@ pub fn adjust_rtt(old_rtt: Duration, new_sample: Duration) -> Duration {
     )
 }
 
-pub async fn check_for_packets(
-    socket: &mut UdpSocket,
-    rwnd: SeqNum,
-) -> (PacketList, Vec<u8>) {
+pub async fn check_for_packets(socket: &mut UdpSocket, rwnd: SeqNum) -> ( PacketList, Vec<u8> ) {
     let mut buf = Vec::with_capacity(MTU * rwnd as usize);
     buf.reserve(MTU);
 
@@ -31,7 +27,7 @@ pub async fn check_for_packets(
             Ok((len, addr)) => {
                 socket.connect(addr).await.expect("Failed to connect");
                 Ok(len)
-            },
+            }
             Err(e) => Err(e),
         }
     } {}
@@ -140,7 +136,7 @@ where
 /// Sends a "start" message packet. Will test RTT's with exponential backoff.
 /// Returns an rtt sample or a socket error
 pub async fn start(socket: &mut UdpSocket, fragments: SeqNum) -> Result<Duration> {
-    let mut rtt = Duration::from_secs_f32(0.75);
+    let mut rtt = Duration::from_secs_f32(1.5);
     let start_slice = &[Packet {
         seq: 0,
         value: PacketValue::Start(fragments),
@@ -152,8 +148,8 @@ pub async fn start(socket: &mut UdpSocket, fragments: SeqNum) -> Result<Duration
                     received_packets.get(0),
                     Some(Packet {
                         seq: _,
-                        value: PacketValue::Ack(set)
-                    }) if set.contains(&start_slice[0].seq)
+                        value: PacketValue::Ack { cum  }
+                    }) if cum == &start_slice[0].seq
                 ) =>
             {
                 return Ok(dur);
