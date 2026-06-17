@@ -22,13 +22,15 @@ pub struct Orchestrator {
 }
 
 impl Orchestrator {
+    const INITIAL_WINDOW: SeqNum = 4;
+
     pub async fn new(socket: UdpSocket, timeout: Duration) -> Self {
         Self {
             packets: vec![],
             received_acks: BTreeSet::new(),
             timeout,
             socket,
-            window: 4, // good initial window size
+            window: Self::INITIAL_WINDOW, // good initial window size
             ids_sent: BTreeSet::new(),
             last_received: Instant::now(),
         }
@@ -44,6 +46,7 @@ impl Orchestrator {
         self.packets = list;
         self.received_acks.clear();
         self.ids_sent.clear();
+        self.window = Self::INITIAL_WINDOW;
     }
 
     /// Reads packets received on the socket and adjusts the received acks
@@ -58,7 +61,11 @@ impl Orchestrator {
             eprintln!("Undeserialized bytes {:?}", remaining);
         }
 
-        eprintln!("Got {} packets from the receiver", received_packets.len());
+        eprintln!(
+            "Got {} packets from the receiver: {:?}",
+            received_packets.len(),
+            received_packets
+        );
         let mut acks_got = BTreeSet::new();
         for packet in received_packets {
             if let PacketValue::Ack(set) = packet.value {
@@ -70,7 +77,7 @@ impl Orchestrator {
             }
         }
 
-        self.window = acks_got.len() as SeqNum;
+        // self.window = (acks_got.len() as SeqNum).max(1);
         eprintln!(
             "Acks received: {:?}. # of packets dropped: {}",
             acks_got,
@@ -80,8 +87,23 @@ impl Orchestrator {
     }
 
     /// Checks if the orchestrator either hasn't send IDs or has timed out
-    pub fn timed_out(&self) -> bool {
-        self.ids_sent.is_empty() || Instant::now() - self.last_received > self.timeout * 2
+    pub fn timed_out(&mut self) -> bool {
+        let time_since = Instant::now() - self.last_received;
+        if self.ids_sent.is_empty() {
+            true
+        } else if time_since
+            > self.timeout * 2 * self.ids_sent.len() as u32
+        {
+            for recseq in self.received_acks.iter() {
+                if !self.ids_sent.contains(recseq) {
+                    self.window = 1.max(self.window - 1);
+                }
+            }
+            self.timeout = adjust_rtt(self.timeout, time_since);
+            true
+        } else {
+            false
+        }
     }
 
     /// Will transmit packets
