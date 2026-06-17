@@ -1,5 +1,5 @@
 use anyhow::Result;
-use jap::{FileData, Packet, PacketValue, SeqNum, check_for_packets};
+use jap::{Packet, PacketValue, SeqNum, check_for_packets};
 use std::collections::BTreeMap;
 use tokio::net::UdpSocket;
 
@@ -18,14 +18,8 @@ async fn main() -> Result<()> {
     let mut process = |s: SeqNum, v: &PacketValue| match v {
         PacketValue::Data(d) => {
             file_data.insert(s, d.to_string());
+            print!("{}", d.to_string());
         }
-
-        PacketValue::Fin => {
-            for f in file_data.values() {
-                print!("{}", f);
-            }
-        }
-
         _ => {}
     };
 
@@ -58,6 +52,7 @@ async fn main() -> Result<()> {
                 }
             } else if packet.seq > ack_cum + 1 {
                 // out of order
+                eprintln!("OoO! Cum is {}, but this packet is {}", ack_cum, packet.seq);
                 from_sender.insert(packet.seq, packet.value);
             } else {
                 // ignore duplicates

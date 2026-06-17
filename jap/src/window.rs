@@ -35,37 +35,6 @@ pub async fn check_for_packets(socket: &mut UdpSocket, rwnd: SeqNum) -> ( Packet
     (list, remaining.to_vec())
 }
 
-/// Blocks reading on the socket until a response is received. Returns deserialized packets and any
-/// remaining bytes that couldn't be deserialized. Will sort the packets
-pub async fn wait_for_packets(
-    socket: &mut UdpSocket,
-    rwnd: SeqNum,
-) -> Result<(PacketList, Vec<u8>)> {
-    let mut buf = Vec::with_capacity(MTU * rwnd as usize);
-    buf.reserve(MTU);
-    let _bytes_read = if socket.peer_addr().is_ok() {
-        socket.recv_buf(&mut buf).await?
-    } else {
-        let (len, addr) = socket.recv_buf_from(&mut buf).await?;
-        socket.connect(addr).await?;
-        len
-    };
-
-    // Drain every datagram already sitting in the receive buffer, so we always
-    // act on the most recent ACK instead of a stale backlog.
-    loop {
-        buf.reserve(MTU);
-        match socket.try_recv_buf(&mut buf) {
-            Ok(_) => continue,
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-            Err(e) => return Err(e.into()),
-        }
-    }
-
-    let (received_packets, remaining) = Packet::from_bytes(&buf);
-    Ok((received_packets, remaining.to_vec()))
-}
-
 /// Writes packets to the socket.
 /// NOTE: Assumes the packets do not exceed MTU
 pub async fn send_packets<'a, T>(socket: &mut UdpSocket, packets: T) -> Result<()>

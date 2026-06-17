@@ -77,18 +77,9 @@ impl Ack {
 /// as well as ACKs
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum PacketValue {
-    // Sender gives this to the receiver,
-    // then uses it get the RTT estimate based on how long it takes to receive an ack.
-    // It also tells the receiver how many packets to expect
-    Start(SeqNum),
-
     // an actual packet with data
     Data(FileData),
 
     // An Acknowledgement from a receiver that a packet was received
     Ack { cum: SeqNum },
-
-    // A message from the sender that all packets have been
-    // succesfully sent and acked
-    Fin,
 }

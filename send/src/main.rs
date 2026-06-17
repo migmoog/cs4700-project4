@@ -40,7 +40,7 @@ async fn main() -> Result<()> {
     let mut seq = 0;
     // means we encountered an EOF
     let mut packets: BTreeMap<SeqNum, PacketValue> =
-        Packet::data(&mut seq, stdin_buffer[..bytes_read].to_vec(), 1)?
+        Packet::data(&mut seq, stdin_buffer[..bytes_read].to_vec())?
             .into_iter()
             .map(|p| (p.seq, p.value))
             .collect();
@@ -48,10 +48,10 @@ async fn main() -> Result<()> {
     let mut received_acks = BTreeSet::<SeqNum>::new();
     let window_size = 2;
 
-    let mut rtt = Duration::from_secs_f32(3.5);
+    let rtt = Duration::from_secs_f32(3.5);
     let mut last_send = Instant::now();
     let mut window = make_window(&mut packets, window_size, &received_acks);
-    let mut send = async |w: &BTreeMap<SeqNum, PacketValue>, socket: &mut UdpSocket| {
+    let send = async |w: &BTreeMap<SeqNum, PacketValue>, socket: &mut UdpSocket| {
         let v: Vec<Packet> = w
             .iter()
             .map(|(k, v)| Packet {
@@ -104,47 +104,5 @@ async fn main() -> Result<()> {
         }
     }
 
-    // send fin packet to receiver so it can print
-    received_acks.clear();
-    let fin = Packet::fin(&mut seq);
-    packets = BTreeMap::from([(fin.seq, fin.value)]);
-    last_send = Instant::now();
-    window = make_window(&mut packets, window_size, &received_acks);
-    send(&window, &mut sender).await?;
-    loop {
-        // success, all of our packets have been acked
-        if got_all_acks(&packets, &received_acks) {
-            eprintln!("Successfully got all Acks for fin");
-            break Ok(());
-        }
-
-        let (received_packets, remaining) = check_for_packets(&mut sender, window_size).await;
-        if !remaining.is_empty() {
-            eprintln!("Unserializable data");
-        }
-
-        if !received_packets.is_empty() {
-            for p in received_packets {
-                if let PacketValue::Ack { cum } = p.value {
-                    for id in packets.keys().filter_map(|&k| (k <= cum).then_some(k)) {
-                        if received_acks.insert(id) {
-                            eprintln!("Got Ack {} from recv packet {}", id, seq);
-                        }
-                    }
-                }
-            }
-        }
-
-        let time_since_send = Instant::now() - last_send;
-        if time_since_send > rtt * 2 || window.keys().all(|k| received_acks.contains(k)) {
-            window = make_window(&mut packets, window_size, &received_acks);
-            if window.is_empty() && got_all_acks(&packets, &received_acks) {
-                eprintln!("Nothing left to window. Got all acks for fin");
-                break Ok(());
-            }
-
-            send(&window, &mut sender).await?;
-            last_send = Instant::now();
-        }
-    }
+    Ok(())
 }
