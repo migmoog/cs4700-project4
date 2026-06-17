@@ -1,11 +1,28 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::time::{Duration, Instant};
+
 use anyhow::Result;
-use jap::{Packet, SeqNum, start};
+use jap::{Packet, PacketValue, SeqNum, check_for_packets, send_packets};
 use tokio::io::{self, AsyncReadExt};
 use tokio::net::UdpSocket;
 
-use crate::orchestrator::Orchestrator;
+fn make_window(
+    packets: &mut BTreeMap<SeqNum, PacketValue>,
+    window_size: SeqNum,
+    received_acks: &BTreeSet<SeqNum>,
+) -> BTreeMap<SeqNum, PacketValue> {
+    packets.retain(|k, _| !received_acks.contains(k));
 
-mod orchestrator;
+    packets
+        .iter()
+        .map(|(&k, v)| (k, v.clone()))
+        .take(window_size as usize)
+        .collect()
+}
+
+fn got_all_acks(packets: &BTreeMap<SeqNum, PacketValue>, received_acks: &BTreeSet<SeqNum>) -> bool {
+    packets.keys().all(|k| received_acks.contains(k))
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -22,42 +39,112 @@ async fn main() -> Result<()> {
     // all packets will start at 0 and will wrap
     let mut seq = 0;
     // means we encountered an EOF
-    let packets = Packet::data(&mut seq, stdin_buffer[..bytes_read].to_vec(), 1)?;
+    let mut packets: BTreeMap<SeqNum, PacketValue> =
+        Packet::data(&mut seq, stdin_buffer[..bytes_read].to_vec(), 1)?
+            .into_iter()
+            .map(|p| (p.seq, p.value))
+            .collect();
 
-    let rtt = start(&mut sender, packets.len() as SeqNum).await?;
+    let mut received_acks = BTreeSet::<SeqNum>::new();
+    let window_size = 2;
 
-    let mut orch = Orchestrator::new(sender, rtt).await;
+    let mut rtt = Duration::from_secs_f32(3.5);
+    let mut last_send = Instant::now();
+    let mut window = make_window(&mut packets, window_size, &received_acks);
+    let mut send = async |w: &BTreeMap<SeqNum, PacketValue>, socket: &mut UdpSocket| {
+        let v: Vec<Packet> = w
+            .iter()
+            .map(|(k, v)| Packet {
+                seq: *k,
+                value: v.clone(),
+            })
+            .collect();
+        eprint!("Trying to send IDs ", );
+        for id in v.iter().map(|p| p.seq) {
+            eprint!("{}, ", id);
+        }
+        eprint!("\n");
+        send_packets(socket, v.iter()).await
+    };
 
-    orch.change_packets(packets);
-
-    // transmitting file data
+    send(&window, &mut sender).await?;
     loop {
-        orch.check().await;
-        if orch.success() {
+        // success, all of our packets have been acked
+        if got_all_acks(&packets, &received_acks) {
+            eprintln!("Successfully got all Acks");
             break;
-        } else if orch.timed_out() {
-            orch.transmit().await?;
+        }
+
+        let (received_packets, remaining) = check_for_packets(&mut sender, window_size).await;
+        if !remaining.is_empty() {
+            eprintln!("Unserializable data");
+        }
+
+        if !received_packets.is_empty() {
+            for p in received_packets {
+                if let PacketValue::Ack { cum } = p.value {
+                    for id in packets.keys().filter_map(|&k| (k <= cum).then_some(k)) {
+                        if received_acks.insert(id) {
+                            eprintln!("Got Ack {} from recv packet {}", id, seq);
+                        }
+                    }
+                }
+            }
+        }
+
+        let time_since_send = Instant::now() - last_send;
+        if time_since_send > rtt * 2 || window.keys().all(|k| received_acks.contains(k)) {
+            window = make_window(&mut packets, window_size, &received_acks);
+            if window.is_empty() && got_all_acks(&packets, &received_acks) {
+                break;
+            }
+
+            send(&window, &mut sender).await?;
+            last_send = Instant::now();
         }
     }
-    // while !orch.success() {
-    //     orch.check();
-    //
-    //     if orch.timed_out() {
-    //         orch.transmit().await?;
-    //     }
-    // }
 
-    orch.change_packets(vec![Packet::fin(&mut seq)]);
-    // transmitting finished packet
+    // send fin packet to receiver so it can print
+    received_acks.clear();
+    let fin = Packet::fin(&mut seq);
+    packets = BTreeMap::from([(fin.seq, fin.value)]);
+    last_send = Instant::now();
+    window = make_window(&mut packets, window_size, &received_acks);
+    send(&window, &mut sender).await?;
     loop {
-        orch.check().await;
-        if orch.success() {
-            break;
-        } else if orch.timed_out() {
-            orch.transmit().await?;
+        // success, all of our packets have been acked
+        if got_all_acks(&packets, &received_acks) {
+            eprintln!("Successfully got all Acks for fin");
+            break Ok(());
+        }
+
+        let (received_packets, remaining) = check_for_packets(&mut sender, window_size).await;
+        if !remaining.is_empty() {
+            eprintln!("Unserializable data");
+        }
+
+        if !received_packets.is_empty() {
+            for p in received_packets {
+                if let PacketValue::Ack { cum } = p.value {
+                    for id in packets.keys().filter_map(|&k| (k <= cum).then_some(k)) {
+                        if received_acks.insert(id) {
+                            eprintln!("Got Ack {} from recv packet {}", id, seq);
+                        }
+                    }
+                }
+            }
+        }
+
+        let time_since_send = Instant::now() - last_send;
+        if time_since_send > rtt * 2 || window.keys().all(|k| received_acks.contains(k)) {
+            window = make_window(&mut packets, window_size, &received_acks);
+            if window.is_empty() && got_all_acks(&packets, &received_acks) {
+                eprintln!("Nothing left to window. Got all acks for fin");
+                break Ok(());
+            }
+
+            send(&window, &mut sender).await?;
+            last_send = Instant::now();
         }
     }
-
-    eprintln!("S: concluded");
-    Ok(())
 }

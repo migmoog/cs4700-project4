@@ -57,9 +57,11 @@ async fn main() -> Result<()> {
                     }
                 }
             } else if packet.seq > ack_cum + 1 {
+                // out of order
                 from_sender.insert(packet.seq, packet.value);
             } else {
-                eprintln!("Duplicate {}, AckCum {}", packet.seq, ack_cum);
+                // ignore duplicates
+                //eprintln!("Duplicate {}, AckCum {}", packet.seq, ack_cum);
             }
         }
 
