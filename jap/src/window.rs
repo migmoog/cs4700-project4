@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use tokio::net::UdpSocket;
 
 use crate::{MTU, Packet, PacketList, SeqNum};
@@ -33,14 +33,6 @@ pub async fn check_for_packets(socket: &mut UdpSocket, rwnd: SeqNum) -> (PacketL
 
     let (list, remaining) = Packet::from_bytes(&buf);
     (list, remaining.to_vec())
-}
-
-/// Blocks until a packet is received. Used mainly for the sender to estimate RTT
-pub async fn wait_for_packet(socket: &mut UdpSocket) -> Result<Packet> {
-    let mut buf = [0u8; MTU];
-    let bytes_read = socket.recv(&mut buf).await?;
-
-    postcard::from_bytes(&buf[..bytes_read]).map_err(|e| anyhow!("Couldn't deserialize bytes: {e}"))
 }
 
 /// Writes packets to the socket.

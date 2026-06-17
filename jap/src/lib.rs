@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use tokio::net::UdpSocket;
 
 mod window;
-pub use window::{adjust_rtt, check_for_packets, send_packets, wait_for_packet};
+pub use window::{adjust_rtt, check_for_packets, send_packets};
 mod value;
 pub use value::{Ack, FileData, PacketValue};
 

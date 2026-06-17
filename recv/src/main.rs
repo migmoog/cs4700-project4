@@ -52,13 +52,6 @@ async fn main() -> Result<()> {
                         ack_cum += 1;
                     }
                 }
-            } else if let Packet {
-                seq: _,
-                value: PacketValue::Start,
-            } = packet
-            {
-                // special case, do not ignore
-                eprintln!("Got a start message");
             } else if packet.seq > ack_cum + 1 {
                 // out of order
                 eprintln!("OoO! Cum is {}, but this packet is {}", ack_cum, packet.seq);

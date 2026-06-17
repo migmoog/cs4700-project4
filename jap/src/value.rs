@@ -77,9 +77,6 @@ impl Ack {
 /// as well as ACKs
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum PacketValue {
-    /// Empty message so the sender can estimate RTT
-    Start,
-
     /// an actual packet with data
     Data(FileData),
 
