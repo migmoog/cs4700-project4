@@ -46,9 +46,9 @@ async fn main() -> Result<()> {
             .collect();
 
     let mut received_acks = BTreeSet::<SeqNum>::new();
-    let window_size = 2;
+    let mut window_size = 4;
 
-    let rtt = Duration::from_secs_f32(3.5);
+    let rtt = Duration::from_secs_f32(1.5);
     let mut last_send = Instant::now();
     let mut window = make_window(&mut packets, window_size, &received_acks);
     let send = async |w: &BTreeMap<SeqNum, PacketValue>, socket: &mut UdpSocket| {
@@ -59,7 +59,7 @@ async fn main() -> Result<()> {
                 value: v.clone(),
             })
             .collect();
-        eprint!("Trying to send IDs ", );
+        eprint!("Trying to send IDs ",);
         for id in v.iter().map(|p| p.seq) {
             eprint!("{}, ", id);
         }
@@ -68,6 +68,8 @@ async fn main() -> Result<()> {
     };
 
     send(&window, &mut sender).await?;
+
+    let mut acks_got = 0;
     loop {
         // success, all of our packets have been acked
         if got_all_acks(&packets, &received_acks) {
@@ -86,6 +88,7 @@ async fn main() -> Result<()> {
                     for id in packets.keys().filter_map(|&k| (k <= cum).then_some(k)) {
                         if received_acks.insert(id) {
                             eprintln!("Got Ack {} from recv packet {}", id, seq);
+                            acks_got += 1;
                         }
                     }
                 }
@@ -94,6 +97,16 @@ async fn main() -> Result<()> {
 
         let time_since_send = Instant::now() - last_send;
         if time_since_send > rtt * 2 || window.keys().all(|k| received_acks.contains(k)) {
+            if acks_got < window_size {
+                let old_window_size = window_size;
+                window_size = 1.max(window_size - 1);
+                eprintln!(
+                    "Sent {} packets. Got {} acks back. New window size is {}",
+                    old_window_size, acks_got, window_size
+                );
+            }
+
+            acks_got = 0;
             window = make_window(&mut packets, window_size, &received_acks);
             if window.is_empty() {
                 eprintln!("I have nothing to send. Contuining");
