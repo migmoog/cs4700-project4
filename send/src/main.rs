@@ -120,14 +120,14 @@ async fn main() -> Result<()> {
                     old_window_size, acks_got, window_size
                 );
             } else {
-                window_size += 1;
+                window_size += 2;
             }
 
             acks_got = 0;
             window = make_window(&mut packets, window_size, &received_acks);
             if window.is_empty() {
-                eprintln!("I have nothing to send. Contuining");
-                continue;
+                eprintln!("I have nothing to send. Concluded!");
+                break;
             }
 
             send(&window, &mut sender).await?;
