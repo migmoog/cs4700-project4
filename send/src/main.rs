@@ -51,7 +51,7 @@ async fn main() -> Result<()> {
     // Reusable ordered set to keep track of which acks we got in a round of sending
     let mut received_acks = BTreeSet::<SeqNum>::new();
     // Initial assumption for what the window size is. Will get adjusted
-    let mut window_size = 4;
+    let mut window_size = 2;
 
     // estimate the time needed for a packet to make a round trip
     let mut rtt = Duration::from_secs_f32(1.5);
@@ -114,13 +114,13 @@ async fn main() -> Result<()> {
             // adjust the window size based on how many acks we got
             if acks_got < window_size {
                 let old_window_size = window_size;
-                window_size = 1.max(window_size - 1);
+                window_size = 1.max((window_size as f32 * 0.75).ceil() as SeqNum);
                 eprintln!(
                     "Sent {} packets. Got {} acks back. New window size is {}",
                     old_window_size, acks_got, window_size
                 );
             } else {
-                window_size += 2;
+                window_size = (window_size as f32 * 1.5).ceil() as SeqNum;
             }
 
             acks_got = 0;
